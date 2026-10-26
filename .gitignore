@@ -1,0 +1,15 @@
+# Model weights (downloaded from the Hugging Face Hub on first run)
+models/
+
+# Dataset / HF cache scratch
+data/
+datasets/
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Rollout artifacts (videos)
+outputs/

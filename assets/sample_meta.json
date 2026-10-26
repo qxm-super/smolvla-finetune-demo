@@ -1,0 +1,14 @@
+{
+  "dataset_repo": "ahmedsohail2003/so101-sim-pickplace",
+  "episode": 0,
+  "frame": 0,
+  "task": "Pick up the red block and place it in the blue tray.",
+  "state": [
+    0.0,
+    -1.5700000524520874,
+    1.5700000524520874,
+    1.5700000524520874,
+    -1.5700000524520874,
+    0.0
+  ]
+}
