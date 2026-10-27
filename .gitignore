@@ -13,3 +13,6 @@ __pycache__/
 
 # Rollout artifacts (videos)
 outputs/
+
+# Personal notes (not part of the code)
+learning_path.txt

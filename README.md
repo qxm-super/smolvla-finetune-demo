@@ -1,4 +1,32 @@
-# SmolVLA: Language-Conditioned Robot Action Inference
+# SmolVLA + ACT: embodied learning on a single pick-and-place task
+
+This repo runs the full *sim2sim* loop on one MuJoCo task — *"pick up the red block and
+place it in the blue tray"* with an SO-ARM100 arm — end to end: collect scripted demos,
+train two very different policies on them (a 450M **VLA** and a 51M **ACT**), roll each
+out closed-loop, and re-implement the underlying **Transformer** from scratch so the ACT
+result isn't a black box.
+
+## At a glance
+
+```mermaid
+flowchart LR
+    EXP["scripted expert<br/>collect_demos.py"] --> DS[("20 demos<br/>3222 frames")]
+    DS --> VLA["SmolVLA 450M<br/>fine-tuned → 95%"]
+    DS --> ACT["ACT 51M<br/>from scratch → 90%"]
+    TF["hand-written Transformer<br/>copy/reverse → 100%"] -.->|explains the core| ACT
+    VLA --> EVAL["MuJoCo closed-loop rollout<br/>(shared eval harness)"]
+    ACT --> EVAL
+```
+
+| policy | params | closed-loop success |
+|---|---|---|
+| SmolVLA — fine-tuned on 20 scene demos | 450M (~100M trained) | **19/20 (95%)** |
+| ACT — from scratch | 51.6M | **18/20 (90%)** |
+| SmolVLA — base model, transferred (no fine-tune) | 450M | 0/5 (0%) |
+
+---
+
+## The SmolVLA demo (where it started)
 
 A minimal, self-contained demo of running **SmolVLA** — a 450M-parameter
 **Vision-Language-Action (VLA)** model — to turn a natural-language instruction plus a
@@ -178,6 +206,67 @@ failure ran out its 400-step horizon on an unlucky initial condition. This is a
 loop works, not that SmolVLA generalizes to a novel scene (that needs real
 cross-embodiment data).
 
+## Training a LeRobot ACT policy from scratch
+
+As a complement to the fine-tuned VLA, the same scene + demos also train a **LeRobot
+ACT** policy (Action Chunking with Transformers, ~51.6M params) *from scratch* — a
+ResNet18 image encoder + transformer encoder/decoder + CVAE latent, with no pretrained
+vision or language backbone. This closes the "LeRobot ACT + robot arm" loop that
+fine-tuning a pretrained VLA doesn't exercise.
+
+```bash
+# Train ACT from scratch on the 20 collected demos (~20 min on an RTX 3080)
+python scripts/train_act.py --steps 3000 --batch-size 8
+
+# Closed-loop eval in the same scene
+python scripts/eval_act.py --episodes 20
+```
+
+**`train_act.py`** — builds an `ACTConfig` (`chunk_size = 100`, `use_vae = True`,
+ResNet18 backbone, no ImageNet pretrained weights), infers input/output features from
+the dataset, normalizes with this dataset's stats, and trains with AdamW + cosine
+warmup at `lr = 1e-4`.
+
+**`eval_act.py`** — loads the checkpoint and its saved pre/post processors, then rolls
+out in the MuJoCo scene at `control_freq = 20` (matching the dataset fps), executing each
+100-step chunk open-loop before re-observing.
+
+### Result
+
+| model | success rate |
+|---|---|
+| LeRobot ACT from scratch | **18/20 (90%)** |
+
+ACT reaches, grasps, places, and releases in ~157 steps — essentially matching the
+scripted expert's ~160. The two failures ran out the 400-step horizon. Like the SmolVLA
+result, this is *sim2sim within one simulator*: it proves the from-scratch ACT training
+loop works end to end, not cross-embodiment generalization.
+
+## Transformer from scratch (understanding the source)
+
+ACT's core is a transformer encoder + decoder. `scripts/transformer_from_scratch.py`
+re-implements that architecture from the ground up — scaled dot-product attention,
+multi-head attention, sinusoidal positional encoding, feed-forward blocks, and the
+encoder/decoder stacks — using only `nn.Linear` / `nn.LayerNorm` / `nn.Embedding`
+(no `nn.Transformer`, `nn.MultiheadAttention`, or `F.scaled_dot_product_attention`).
+
+To prove it actually learns, it trains on two tiny sequence-to-sequence tasks:
+
+```bash
+python scripts/transformer_from_scratch.py --task copy     # ~400 steps to 100%
+python scripts/transformer_from_scratch.py --task reverse  # ~800 steps to 100%
+```
+
+| task | what the decoder must do | final accuracy |
+|---|---|---|
+| `copy` | reproduce the input digits | 100% |
+| `reverse` | output the input digits in reverse order | 100% |
+
+`reverse` is the interesting one: it can't be solved by echoing the input, so the
+decoder must learn to cross-attend to the encoder memory *in the correct order* — the
+exact mechanism ACT's decoder uses to turn image + joint-state tokens into an action
+chunk.
+
 ## Version note (LeRobot 0.4.4 vs 0.6.0)
 
 The community checkpoint was trained and saved with **LeRobot 0.6.0**, whose config
@@ -207,7 +296,10 @@ checkpoint loads losslessly. Two more dependency traps worth knowing:
 │   ├── rollout.py           # closed-loop inference (base model) + video + metrics
 │   ├── collect_demos.py     # scripted expert -> LeRobot dataset in this scene
 │   ├── finetune_smolvla.py  # expert-only fine-tuning on the collected demos
-│   └── eval_finetuned.py    # closed-loop eval of the fine-tuned checkpoint
+│   ├── eval_finetuned.py    # closed-loop eval of the fine-tuned checkpoint
+│   ├── train_act.py         # LeRobot ACT from scratch on the collected demos
+│   ├── eval_act.py          # closed-loop eval of the ACT checkpoint
+│   └── transformer_from_scratch.py  # hand-written encoder-decoder Transformer
 ├── assets/                  # committed sample observation + scene + generated files
 │   ├── front.png            #   front camera view (224x224)
 │   ├── wrist.png            #   wrist camera view (224x224)
@@ -219,6 +311,7 @@ checkpoint loads losslessly. Two more dependency traps worth knowing:
 │   ├── rollout/             # base-model episode videos (gitignored)
 │   ├── eval/                # fine-tuned episode videos (gitignored)
 │   └── train/smolvla_so101/ # fine-tuned checkpoint (gitignored)
+│   └── train/act_so101/     # ACT checkpoint (gitignored)
 ├── datasets/                # collected demo dataset (gitignored)
 ├── models/                  # base checkpoint (gitignored, downloaded on first run)
 ├── .gitignore
